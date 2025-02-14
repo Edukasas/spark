@@ -12,6 +12,7 @@ API_KEY = os.getenv("OPENCAGE_API_KEY")
 
 if not API_KEY:
     raise ValueError("API key not found! Make sure .env file is properly set up.")
+
 # Function to get coordinates from OpenCage API
 def get_coordinates(address):
     url = f"https://api.opencagedata.com/geocode/v1/json?q={address}&key={API_KEY}"
@@ -27,84 +28,94 @@ def get_coordinates(address):
 # Convert function to PySpark UDF
 def get_coordinates_udf(address):
     lat, lon = get_coordinates(address)
-    return (lat, lon)
+    return (lat, lon) if lat is not None and lon is not None else (None, None)
 
+# Convert UDF output to valid coordinates
 def calculate_geohash(lat, lon, precision=4):
     try:
         # Convert to float and check if the values are valid
-        lat = float(lat)
-        lon = float(lon)
+        lat = float(lat) if lat is not None else None
+        lon = float(lon) if lon is not None else None
         
         # Check if the coordinates are within valid ranges
-        if lat < -90 or lat > 90 or lon < -180 or lon > 180:
+        if lat is None or lon is None or lat < -90 or lat > 90 or lon < -180 or lon > 180:
             return None
         return pgh.encode(lat, lon, precision)
     except (ValueError, TypeError):
         return None
 
 geohash_udf = udf(calculate_geohash, StringType())
-# Initialize Spark session
 
-spark = SparkSession.builder \
-    .appName("Weather Deduplication") \
-    .config("spark.executor.memory", "16g") \
-    .config("spark.driver.memory", "16g") \
-    .config("spark.sql.shuffle.partitions", "50") \
-    .getOrCreate()
+def create_spark_session():
+    spark = SparkSession.builder \
+        .appName("Weather Deduplication") \
+        .config("spark.executor.memory", "16g") \
+        .config("spark.driver.memory", "16g") \
+        .config("spark.sql.shuffle.partitions", "50") \
+        .getOrCreate()
+    return spark
 
-# Read CSV file
-hotel = spark.read.csv(
-    r"C:\Users\Edas\Downloads\m06sparkbasics\m06sparkbasics\hotels",
-    header=True,
-    inferSchema=True
-)
+def process_data(spark):
+    # Read CSV file
+    hotel = spark.read.csv(
+        r"C:\Users\Edas\Downloads\m06sparkbasics\m06sparkbasics\hotels",
+        header=True,
+        inferSchema=True
+    )
 
-weather = spark.read.parquet(
-    r"C:\Users\Edas\Downloads\m06sparkbasics\m06sparkbasics\weather"
-).limit(100000)
+    weather = spark.read.parquet(
+        r"C:\Users\Edas\Downloads\m06sparkbasics\m06sparkbasics\weather"
+    ).limit(100000)
 
-# Filter rows with missing or invalid coordinates
-hotel_faulty = hotel.filter(
-    col("Latitude").isNull() | col("Longitude").isNull() |  # Check for null values
-    (col("Latitude") == "NA") | (col("Longitude") == "NA") |  # Check for "NA" as a string
-    (col("Latitude") < -90) | (col("Latitude") > 90) |  # Latitude out of bounds
-    (col("Longitude") < -180) | (col("Longitude") > 180)  # Longitude out of bounds
-)
+    # Filter rows with missing or invalid coordinates
+    hotel_faulty = hotel.filter(
+        col("Latitude").isNull() | col("Longitude").isNull() |  # Check for null values
+        (col("Latitude") == "NA") | (col("Longitude") == "NA") |  # Check for "NA" as a string
+        (col("Latitude") < -90) | (col("Latitude") > 90) |  # Latitude out of bounds
+        (col("Longitude") < -180) | (col("Longitude") > 180)  # Longitude out of bounds
+    )
 
-# Apply UDF to get correct coordinates
-schema = StructType([
-    StructField("Latitude", DoubleType(), True),
-    StructField("Longitude", DoubleType(), True)
-])
+    # Apply UDF to get correct coordinates
+    schema = StructType([  # Struct for latitude and longitude
+        StructField("Latitude", DoubleType(), True),
+        StructField("Longitude", DoubleType(), True)
+    ])
 
-get_coordinates_spark_udf = udf(get_coordinates_udf, schema)
+    get_coordinates_spark_udf = udf(get_coordinates_udf, schema)
 
-# Apply UDF to update faulty coordinates
-hotel_fixed = hotel_faulty.withColumn("CorrectedCoords", get_coordinates_spark_udf(col("Address")))
+    # Apply UDF to update faulty coordinates
+    hotel_fixed = hotel_faulty.withColumn("CorrectedCoords", get_coordinates_spark_udf(col("Address")))
 
-# Split CorrectedCoords into Latitude and Longitude
-hotel_fixed = hotel_fixed.withColumn("Latitude", col("CorrectedCoords.Latitude")) \
-                         .withColumn("Longitude", col("CorrectedCoords.Longitude")) \
-                         .drop("CorrectedCoords")
+    # Split CorrectedCoords into Latitude and Longitude
+    hotel_fixed = hotel_fixed.withColumn("Latitude", col("CorrectedCoords.Latitude")) \
+                             .withColumn("Longitude", col("CorrectedCoords.Longitude")) \
+                             .drop("CorrectedCoords")
 
-hotel_valid = hotel.subtract(hotel_faulty)
+    hotel_valid = hotel.subtract(hotel_faulty)
 
-hotel_final = hotel_valid.union(hotel_fixed)
+    hotel_final = hotel_valid.union(hotel_fixed)
 
-hotel_final = hotel_final.withColumn("Geohash", geohash_udf(col("Latitude"), col("Longitude")))
+    hotel_final = hotel_final.withColumn("Geohash", geohash_udf(col("Latitude"), col("Longitude")))
 
-hotel_final = hotel_final.drop("Latitude", "Longitude")
+    hotel_final = hotel_final.drop("Latitude", "Longitude")
 
-weather = weather.withColumn("Geohash", geohash_udf(col("lat"), col("lng")))
+    weather = weather.withColumn("Geohash", geohash_udf(col("lat"), col("lng")))
 
-weather = weather.drop("lat", "lng")
+    weather = weather.drop("lat", "lng")
 
-weather = weather.persist()
+    weather = weather.persist()
 
-weather = weather.dropDuplicates(["avg_tmpr_f", "wthr_date", "Geohash"])
+    # Drop duplicates based on relevant fields
+    weather = weather.dropDuplicates(["avg_tmpr_f", "wthr_date", "Geohash"])
 
-joined_df = weather.join(hotel_final, on="Geohash", how="inner")
+    # Perform the join
+    joined_df = weather.join(hotel_final, on="Geohash", how="inner")
 
-joined_df.show()
-# Stop Spark session
-spark.stop()
+    # Show the final result
+    joined_df.show()
+
+# Main function to run the code
+if __name__ == "__main__":
+    spark = create_spark_session()
+    process_data(spark)
+    spark.stop()
