@@ -8,6 +8,14 @@ from pyspark.sql.types import StructType, StructField, DoubleType, StringType
 
 load_dotenv()
 
+storage_account = os.getenv("AZURE_STORAGE_ACCOUNT")
+container_name = os.getenv("AZURE_CONTAINER_NAME")
+connection_string = os.getenv("AZURE_CONNECTION_STRING")
+
+if not storage_account or not container_name or not connection_string:
+    raise ValueError("Missing Azure Storage configuration in .env file")
+
+
 API_KEY = os.getenv("OPENCAGE_API_KEY")
 
 if not API_KEY:
@@ -52,20 +60,28 @@ def create_spark_session():
         .config("spark.executor.memory", "16g") \
         .config("spark.driver.memory", "16g") \
         .config("spark.sql.shuffle.partitions", "50") \
+        .config("spark.jars.packages", "org.apache.hadoop:hadoop-azure:3.2.0,com.microsoft.azure:azure-storage:8.6.6") \
         .getOrCreate()
+
+    if "SharedAccessSignature=" in connection_string:
+        sas_token = connection_string.split("SharedAccessSignature=")[1].split(";")[0]
+    else:
+        raise ValueError("⚠️ ERROR: SAS Token not found in AZURE_CONNECTION_STRING. Check your .env file!")
+
+    spark.conf.set(
+        f"fs.azure.sas.{container_name}.{storage_account}.blob.core.windows.net",
+        sas_token
+    )
+
     return spark
+
 
 def process_data(spark):
     # Read CSV file
-    hotel = spark.read.csv(
-        r"C:\Users\Edas\Downloads\m06sparkbasics\m06sparkbasics\hotels",
-        header=True,
-        inferSchema=True
-    )
-
-    weather = spark.read.parquet(
-        r"C:\Users\Edas\Downloads\m06sparkbasics\m06sparkbasics\weather"
-    ).limit(100000)
+    hotel_file_path = f"wasbs://{container_name}@{storage_account}.blob.core.windows.net/hotels/"
+    weather_file_path = f"wasbs://{container_name}@{storage_account}.blob.core.windows.net/weather/"
+    hotel = spark.read.csv(hotel_file_path, header=True, inferSchema=True)
+    weather = spark.read.parquet(weather_file_path).limit(100000)
 
     # Filter rows with missing or invalid coordinates
     hotel_faulty = hotel.filter(
