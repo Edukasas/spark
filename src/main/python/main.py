@@ -11,6 +11,11 @@ load_dotenv()
 storage_account = os.getenv("AZURE_STORAGE_ACCOUNT")
 container_name = os.getenv("AZURE_CONTAINER_NAME")
 connection_string = os.getenv("AZURE_CONNECTION_STRING")
+output_storage_account = os.getenv("OUTPUT_STORAGE_ACCOUNT")
+output_container_name = os.getenv("OUTPUT_CONTAINER_NAME")
+output_pk = os.getenv("OUTPUT_PK")
+
+adls_url = f"abfss://{output_container_name}@{output_storage_account}.dfs.core.windows.net/"
 
 if not storage_account or not container_name or not connection_string:
     raise ValueError("Missing Azure Storage configuration in .env file")
@@ -66,13 +71,15 @@ def create_spark_session():
     if "SharedAccessSignature=" in connection_string:
         sas_token = connection_string.split("SharedAccessSignature=")[1].split(";")[0]
     else:
-        raise ValueError("⚠️ ERROR: SAS Token not found in AZURE_CONNECTION_STRING. Check your .env file!")
+        raise ValueError("ERROR: SAS Token not found in AZURE_CONNECTION_STRING. Check your .env file!")
 
     spark.conf.set(
         f"fs.azure.sas.{container_name}.{storage_account}.blob.core.windows.net",
         sas_token
     )
 
+    spark.conf.set(f"fs.azure.account.auth.type.{output_storage_account}.dfs.core.windows.net", "SharedKey")
+    spark.conf.set(f"fs.azure.account.key.{output_storage_account}.dfs.core.windows.net", output_pk)
     return spark
 
 
@@ -81,7 +88,7 @@ def process_data(spark):
     hotel_file_path = f"wasbs://{container_name}@{storage_account}.blob.core.windows.net/hotels/"
     weather_file_path = f"wasbs://{container_name}@{storage_account}.blob.core.windows.net/weather/"
     hotel = spark.read.csv(hotel_file_path, header=True, inferSchema=True)
-    weather = spark.read.parquet(weather_file_path).limit(100000)
+    weather = spark.read.parquet(weather_file_path).limit(10000)
 
     # Filter rows with missing or invalid coordinates
     hotel_faulty = hotel.filter(
@@ -127,8 +134,10 @@ def process_data(spark):
     # Perform the join
     joined_df = weather.join(hotel_final, on="Geohash", how="inner")
 
-    # Show the final result
-    joined_df.show()
+    print("SUCCESS!")
+    # Write the final result
+    dummy_file_path = f"{adls_url}output/"
+    joined_df.write.mode("overwrite").parquet(dummy_file_path)
 
 # Main function to run the code
 if __name__ == "__main__":
