@@ -21,3 +21,5 @@ build/
 
 /terraform
 Dockerfile
+
+*.png

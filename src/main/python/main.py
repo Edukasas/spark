@@ -61,10 +61,7 @@ geohash_udf = udf(calculate_geohash, StringType())
 
 def create_spark_session():
     spark = SparkSession.builder \
-        .appName("Weather Deduplication") \
-        .config("spark.executor.memory", "16g") \
-        .config("spark.driver.memory", "16g") \
-        .config("spark.sql.shuffle.partitions", "50") \
+        .appName("Hotel Weather Dataframe") \
         .config("spark.jars.packages", "org.apache.hadoop:hadoop-azure:3.2.0,com.microsoft.azure:azure-storage:8.6.6") \
         .getOrCreate()
 
@@ -88,7 +85,7 @@ def process_data(spark):
     hotel_file_path = f"wasbs://{container_name}@{storage_account}.blob.core.windows.net/hotels/"
     weather_file_path = f"wasbs://{container_name}@{storage_account}.blob.core.windows.net/weather/"
     hotel = spark.read.csv(hotel_file_path, header=True, inferSchema=True)
-    weather = spark.read.parquet(weather_file_path).limit(10000)
+    weather = spark.read.parquet(weather_file_path)
 
     # Filter rows with missing or invalid coordinates
     hotel_faulty = hotel.filter(
@@ -134,7 +131,6 @@ def process_data(spark):
     # Perform the join
     joined_df = weather.join(hotel_final, on="Geohash", how="inner")
 
-    print("SUCCESS!")
     # Write the final result
     dummy_file_path = f"{adls_url}output/"
     joined_df.write.mode("overwrite").parquet(dummy_file_path)
