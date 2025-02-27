@@ -110,10 +110,10 @@ python -m unittest src.test.test_main
 
 ### Azure storage explorer
 Fetching and populating was done with the help of Azure
-![image.png](https://github.com/Edukasas/spark/blob/dev/image.png)
+![image](https://github.com/user-attachments/assets/d4b1acc2-b17e-4aeb-85ff-4767f5dec418)
 
 Fragment of final output
-![(image-1.png)](https://github.com/Edukasas/spark/blob/dev/image-1.png)
+![image-1](https://github.com/user-attachments/assets/2f137a7b-cac6-4bb5-bcfb-e71878f982b7)
 
 
 ### Teraform
